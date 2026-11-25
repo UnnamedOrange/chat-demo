@@ -4,10 +4,12 @@ import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
 import type {
   ApiErrorBody,
+  BalanceInfo,
   CreateMessageRequest,
   FileObject,
   FilePurpose,
   MessageStreamEvent,
+  UserBalance,
 } from './types.js'
 
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
@@ -97,6 +99,38 @@ export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promis
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   })
+}
+
+/**
+ * GET /user/balance 查询账户余额（不产生费用）。
+ * 多币种账号返回条目顺序不稳定，优先取有余额的 CNY 条目，避免展示另一币种的零余额。
+ */
+export const fetchBalance = async (
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<BalanceInfo | null> => {
+  const response = await request(`${API_ORIGIN}/user/balance`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal,
+  })
+  const body = (await response.json()) as UserBalance | null
+  const infos = body && Array.isArray(body.balance_infos) ? body.balance_infos : []
+  const usable = infos.filter(
+    (info) =>
+      info !== null &&
+      typeof info === 'object' &&
+      typeof info.currency === 'string' &&
+      Number.isFinite(Number(info.total_balance))
+  )
+  const positive = usable.filter((info) => Number(info.total_balance) > 0)
+  return (
+    positive.find((info) => info.currency.toUpperCase() === 'CNY') ??
+    positive[0] ??
+    usable.find((info) => info.currency.toUpperCase() === 'CNY') ??
+    usable[0] ??
+    null
+  )
 }
 
 /**

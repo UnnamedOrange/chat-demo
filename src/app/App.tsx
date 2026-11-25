@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useTranslate } from '../i18n/index.js'
+import { refreshBalance } from '../services/balance.js'
 import { useSettings } from '../services/settings.js'
 import { useIsMobile, useMobileViewport, usePreventPageScroll } from './viewport.js'
 import {
@@ -30,6 +31,7 @@ export const App = () => {
   const t = useTranslate()
   const isMobile = useIsMobile()
   const locale = useSettings((state) => state.locale)
+  const apiKey = useSettings((state) => state.apiKey)
   // 移动端侧边栏以独立抽屉管理开合状态
   const siderCollapsed = useSettings((state) => state.siderCollapsed) && !isMobile
   const ready = useChatStore((state) => state.ready)
@@ -55,6 +57,11 @@ export const App = () => {
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  // 首次打开和更换 API Key 后查询余额；同一时刻的请求由余额服务合并。
+  useEffect(() => {
+    void refreshBalance()
+  }, [apiKey])
 
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明
   useEffect(() => onUploadNotice(showToast), [])

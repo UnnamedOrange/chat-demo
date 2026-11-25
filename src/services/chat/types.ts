@@ -73,6 +73,34 @@ export type ReplyBlock = ThinkingPart | TextPart | ServerToolBlock
  */
 export type ReplyStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'error'
 
+/** 费用单价，单位：元 / 百万 token。 */
+export type CostRates = {
+  cacheHit: number
+  cacheMiss: number
+  output: number
+}
+
+/**
+ * 一次模型请求的费用快照，随回复保存在本机，不进入历史导出。
+ * 金额在请求结束时按当时的公开单价算好，后续调价或重开页面都不改变历史记录。
+ */
+export type MessageCost = {
+  /** 服务端 message_start 的消息 ID，用于避免同一请求重复记账。 */
+  requestId: string
+  /** 请求发出时间，用于展示与峰谷价判定。 */
+  at: number
+  /** 人民币金额。 */
+  amount: number
+  /** 当前只按人民币计价。 */
+  currency: 'CNY'
+  /** 是否按峰时价格计算。 */
+  peak: boolean
+  /** 实际使用的单价快照，元 / 百万 token。 */
+  rates: CostRates
+  /** 本次请求的用量。 */
+  usage: MessageUsage
+}
+
 export type AssistantMessage = MessageBranch & {
   id: string
   role: 'assistant'
@@ -94,6 +122,8 @@ export type AssistantMessage = MessageBranch & {
   stopDetails?: StopDetails
   /** 最近一次请求的用量，续写后更新 */
   usage?: MessageUsage
+  /** 每次请求的费用快照；随会话保存在本机，不进入历史导出。续写时追加，旧记录可能没有。 */
+  costs?: MessageCost[]
   error?: {
     /** upload：发送前补传附件失败，请求没有发出 */
     kind: ApiErrorKind | 'upload'

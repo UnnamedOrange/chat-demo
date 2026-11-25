@@ -11,7 +11,10 @@ import {
   uploadAttachment,
   useUploads,
 } from '../attachments.js'
+import { refreshBalance } from '../balance.js'
+import { withReplyCost } from '../billing.js'
 import { useSettings } from '../settings.js'
+import { refreshUsage, removeSessionUsage, updateSessionUsage } from '../usage.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
@@ -186,48 +189,57 @@ const updateReply = (sessionId: string, reply: AssistantMessage) =>
     ),
   }))
 
-const persist = (sessionId: string) => {
+const persist = (sessionId: string): Promise<void> => {
   const session = getSession(sessionId)
-  if (session) {
-    unsavedSessions.add(sessionId)
-    if (deletingSessions.has(sessionId)) {
-      return
-    }
-    const epoch = historyEpoch
-    const files = pendingFiles.get(sessionId)
-    void db
-      .saveSession(session, files)
-      .then(() => {
-        if (epoch !== historyEpoch || !getSession(sessionId)) {
-          return
-        }
-        if (pendingFiles.get(sessionId) === files) {
-          pendingFiles.delete(sessionId)
-        }
-        if (getSession(sessionId) === session) {
-          unsavedSessions.delete(sessionId)
-          set((state) => ({
-            sessionSaveErrors: Object.fromEntries(
-              Object.entries(state.sessionSaveErrors).filter(([id]) => id !== sessionId)
-            ),
-          }))
-          trimSessionCache()
-        }
-      })
-      .catch((error: unknown) => {
-        db.reportStorageError('save session')(error)
-        if (epoch === historyEpoch && getSession(sessionId)) {
-          set((state) => ({
-            sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
-          }))
-        }
-      })
+  if (!session) {
+    return Promise.resolve()
   }
+  unsavedSessions.add(sessionId)
+  if (deletingSessions.has(sessionId)) {
+    return Promise.resolve()
+  }
+  const epoch = historyEpoch
+  const files = pendingFiles.get(sessionId)
+  return db
+    .saveSession(session, files)
+    .then(() => {
+      if (epoch !== historyEpoch || !getSession(sessionId)) {
+        return
+      }
+      if (pendingFiles.get(sessionId) === files) {
+        pendingFiles.delete(sessionId)
+      }
+      if (getSession(sessionId) === session) {
+        unsavedSessions.delete(sessionId)
+        set((state) => ({
+          sessionSaveErrors: Object.fromEntries(
+            Object.entries(state.sessionSaveErrors).filter(([id]) => id !== sessionId)
+          ),
+        }))
+        trimSessionCache()
+      }
+    })
+    .catch((error: unknown) => {
+      db.reportStorageError('save session')(error)
+      if (epoch === historyEpoch && getSession(sessionId)) {
+        set((state) => ({
+          sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
+        }))
+      }
+    })
 }
 
 export const retrySaveSessions = () => {
   if (!get().importingHistory) {
-    unsavedSessions.forEach(persist)
+    const saves = [...unsavedSessions].map(async (id) => {
+      const session = getSession(id)
+      await persist(id)
+      const summary = get().sessions.find((item) => item.id === id)
+      if (session && summary && summary.updatedAt === session.updatedAt) {
+        updateSessionUsage(session)
+      }
+    })
+    void Promise.all(saves)
   }
 }
 
@@ -433,6 +445,7 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
       sessionSaveErrors: {},
       activeId: null,
     })
+    void refreshUsage()
     return summaries.length
   } finally {
     set({ importingHistory: false })
@@ -529,6 +542,7 @@ const removeSessionData = async (id: string): Promise<boolean> => {
       ),
       activeId: state.activeId === id ? null : state.activeId,
     }))
+    removeSessionUsage(id)
     return true
   } catch (error) {
     db.reportStorageError('delete session')(error)
@@ -992,6 +1006,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
   let reply = initial
   let frame = 0
+  /** 当前请求的 message ID 与发出时间；费用按这两项去重和计价。 */
+  let requestId: string | undefined
+  let requestAt = 0
   const flush = () => {
     cancelAnimationFrame(frame)
     frame = 0
@@ -1021,6 +1038,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           initial.thinking ?? false,
           latestReminder
         )
+        requestAt = Date.now()
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
           {
@@ -1036,6 +1054,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         )
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
+          if (event.type === 'message_start') {
+            requestId = event.message.id
+          }
           receivedContent ||= event.type === 'content_block_start'
           if (
             event.type === 'message_delta' &&
@@ -1078,6 +1099,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
         ) {
+          // 失败请求可能已经产生用量，先记账再重发；下一请求用自己的 ID 单独记录。
+          reply = withReplyCost(reply, requestId, requestAt)
+          requestId = undefined
+          requestAt = 0
           await waitForRetry(attempt, controller.signal)
           if (controller.signal.aborted) {
             reply = settleReply(reply, 'stopped', Date.now())
@@ -1108,12 +1133,22 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     titleRequests.delete(controller)
     streamFlushes.delete(sessionId)
     cancelAnimationFrame(frame)
+    reply = withReplyCost(reply, requestId, requestAt)
     updateReply(sessionId, reply)
     set((state) => ({
       streaming: Object.fromEntries(
         Object.entries(state.streaming).filter(([id]) => id !== sessionId)
       ),
     }))
-    persist(sessionId)
+    const session = getSession(sessionId)
+    const saving = persist(sessionId)
+    // 本轮已经入账，保存后刷新余额并增量更新累计花费。
+    void refreshBalance()
+    void saving.then(() => {
+      const summary = get().sessions.find((item) => item.id === sessionId)
+      if (session && summary && summary.updatedAt === session.updatedAt) {
+        updateSessionUsage(session)
+      }
+    })
   }
 }
