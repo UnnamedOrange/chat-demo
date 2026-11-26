@@ -10,6 +10,7 @@ import { IconCheckOutline16, IconCopyOutline16 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
 import { copyText } from '../../utils/clipboard.js'
 import { MermaidDiagram } from './MermaidDiagram.js'
+import { SvgDiagram } from './SvgDiagram.js'
 import styles from './CodeBlock.module.css'
 
 /** 代码块标题栏：左侧语言名，右侧复制 */
@@ -17,11 +18,13 @@ const CodeInfoRow = ({
   code,
   infostring,
   showDiagram,
+  isSvg,
   onToggleDiagram,
 }: {
   code: string
   infostring: string
   showDiagram: boolean
+  isSvg: boolean
   onToggleDiagram?: () => void
 }) => {
   const t = useTranslate()
@@ -29,14 +32,17 @@ const CodeInfoRow = ({
   return (
     <div className={styles.container}>
       {onToggleDiagram ? (
-        <div className="md-code-block-switch" aria-label={t('mermaidSwitchLabel')}>
+        <div
+          className="md-code-block-switch"
+          aria-label={t(isSvg ? 'svgSwitchLabel' : 'mermaidSwitchLabel')}
+        >
           <button
             type="button"
             className={styles.button}
             aria-pressed={showDiagram}
             onClick={() => !showDiagram && onToggleDiagram()}
           >
-            {t('mermaidDiagram')}
+            {t(isSvg ? 'svgDiagram' : 'mermaidDiagram')}
           </button>
           <button
             type="button"
@@ -44,7 +50,7 @@ const CodeInfoRow = ({
             aria-pressed={!showDiagram}
             onClick={() => showDiagram && onToggleDiagram()}
           >
-            {t('mermaidCode')}
+            {t(isSvg ? 'svgCode' : 'mermaidCode')}
           </button>
         </div>
       ) : (
@@ -80,6 +86,7 @@ export const CodeBlock = memo(function CodeBlock({
   loading?: boolean
 }) {
   const isMermaid = infostring.toLowerCase() === 'mermaid'
+  const isSvg = infostring.toLowerCase() === 'svg'
   const [showDiagram, setShowDiagram] = useState(true)
   // 语言包注册在全局 Prism 上，每次渲染直接判断；加载完成后触发一次重渲染
   const rerender = useReducer((n: number) => n + 1, 0)[1]
@@ -110,11 +117,14 @@ export const CodeBlock = memo(function CodeBlock({
           code={code}
           infostring={infostring}
           showDiagram={showDiagram}
-          onToggleDiagram={isMermaid ? () => setShowDiagram((show) => !show) : undefined}
+          isSvg={isSvg}
+          onToggleDiagram={isMermaid || isSvg ? () => setShowDiagram((show) => !show) : undefined}
         />
       </div>
       {isMermaid && showDiagram ? (
         <MermaidDiagram code={code} loading={loading} />
+      ) : isSvg && showDiagram ? (
+        <SvgDiagram code={code} loading={loading} />
       ) : (
         <pre dangerouslySetInnerHTML={{ __html: renderedHtml }}></pre>
       )}
