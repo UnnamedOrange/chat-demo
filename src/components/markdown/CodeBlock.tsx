@@ -6,9 +6,10 @@ import {
   isHighlightLoaded,
   loadHighlight,
 } from '../../services/markdown/highlight.js'
+import { renderSvg } from '../../services/markdown/svg.js'
 import { IconCheckOutline16, IconCopyOutline16 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
-import { copyText } from '../../utils/clipboard.js'
+import { copySvgImage, copyText } from '../../utils/clipboard.js'
 import { MermaidDiagram } from './MermaidDiagram.js'
 import { SvgDiagram } from './SvgDiagram.js'
 import styles from './CodeBlock.module.css'
@@ -60,7 +61,14 @@ const CodeInfoRow = ({
         type="button"
         className={styles.button}
         onClick={async () => {
-          if (!(await copyText(code))) {
+          let copied: boolean
+          if (isSvg && showDiagram) {
+            const svg = renderSvg(code)
+            copied = svg ? await copySvgImage(svg) : false
+          } else {
+            copied = await copyText(code)
+          }
+          if (!copied) {
             showToast({ key: 'copyFailed' })
             return
           }
